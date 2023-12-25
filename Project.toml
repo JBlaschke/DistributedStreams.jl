@@ -1,0 +1,4 @@
+name = "DistributedStreams"
+uuid = "471454e3-b38b-46b5-b370-6fb00e3b27c1"
+authors = ["Johannes Blaschke <johannes@blaschke.science>"]
+version = "0.1.0"
