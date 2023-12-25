@@ -2,3 +2,10 @@ name = "DistributedStreams"
 uuid = "471454e3-b38b-46b5-b370-6fb00e3b27c1"
 authors = ["Johannes Blaschke <johannes@blaschke.science>"]
 version = "0.1.0"
+
+[deps]
+Chain = "8be319e6-bccf-4806-a6f7-6fae938471bc"
+CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
