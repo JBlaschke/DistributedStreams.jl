@@ -2,5 +2,10 @@ using Test
 
 import DistributedStreams
 
-println("Testing import:")
-@test_nowarn DistributedStreams.greet()
+
+#_______________________________________________________________________________
+# Test fn_ret_type
+#-------------------------------------------------------------------------------
+
+a(i) = Int64(1)
+@test DistributedStreams.fn_ret_type(a, Any) == Int64
