@@ -1,5 +1,8 @@
 module DistributedStreams
 
+include("bits.jl")
+using .Bits
+
 using Base: @kwdef
 
 using Distributed
@@ -14,10 +17,12 @@ using Dates
 #-------------------------------------------------------------------------------
 
 @kwdef struct Entry
-    id::Int64                    = 0
-    admin_comment::Vector{UInt8} = UInt8[]
-    valid::Bool                  = false
+    id::Int64           = 0
+    data::Vector{UInt8} = UInt8[]
+    valid::Bool         = false
 end
+
+export Entry
 
 #-------------------------------------------------------------------------------
 
@@ -32,6 +37,18 @@ fn_ret_type(fn, in_type::DataType) = Base.return_types(fn, (in_type,))[1]
 #-------------------------------------------------------------------------------
 
 #_______________________________________________________________________________
+# Helper functions to compress and decompress data, using these functions
+# ensure that a consistent compression and decompression algorithm is used
+#-------------------------------------------------------------------------------
+
+compress(data)   = transcode(ZlibCompressor,   data)
+decompress(data) = transcode(ZlibDecompressor, data)
+
+export compress, decompress
+
+#-------------------------------------------------------------------------------
+
+#_______________________________________________________________________________
 # Worker functions following a producer-consumer pattern:
 # + `launch_monitor` starts a worker that generates `Entry` objects based on a
 #   `processor` function. It is a data source (producer)
@@ -42,6 +59,21 @@ fn_ret_type(fn, in_type::DataType) = Base.return_types(fn, (in_type,))[1]
 #   a data sink (consumer)
 #-------------------------------------------------------------------------------
 
+"""
+    in, out = launch_monitor(processor; buffer_size=32)
+
+Launches a "processor" worker, returning two remote channels: an input and an
+output. The worker "lives" indefintely. For every element in `in`, it applies
+the function `processor`, and adds its result to `out`.
+
+The function `processor` must:
+1. Take a single input argument, and return a single output
+2. Be statically typed: the input and output types are not allowed to change
+
+The monitor worker only quits when it cannot take from `in`. The difference to
+`launch_consumer` is that `launch_monitor` creates its own input channel,
+whereas `launch_consumer` needs to be given an existing input channel.
+"""
 function launch_monitor(processor; buffer_size=32)
     function remote_monitor(fn, entries, results)
         @sync while true
@@ -70,6 +102,7 @@ function launch_monitor(processor; buffer_size=32)
     return entries, results
 end
 
+export launch_monitor
 
 function launch_consumer(processor, entries; buffer_size=32)
     function remote_monitor(fn, entries, results)
