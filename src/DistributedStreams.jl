@@ -92,10 +92,14 @@ function launch_monitor(processor; buffer_size=32, timeout=1)
             # it is, then shut down the worker. Any running tasks are
             # interrupted
             while true
+                # timedwait is slow, so when running in safe mode, we assume
+                # that `t` will finish
                 if local_control.safe[]
                     break
                 end
-
+                # THIS IS UNSAFE MODE: SLOWER, but it does NOT assume that `t`
+                # is bound to finish => introduce timeout which will shut down
+                # the worker with `local_control.flag[] == true`
                 if timedwait(()->istaskdone(t), timeout; pollint=0.001) == :ok
                     break
                 end
