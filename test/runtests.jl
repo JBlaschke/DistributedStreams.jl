@@ -73,17 +73,16 @@ input, output, control = launch_monitor(
         id = x.id
         data = deserialize(x.data) + 1
         Entry(id=x.id, data=serialize(data), valid=true)
-    end
+    end;
+    start_safe = false,
+    verbose = true
 )
 
 N = 100000
 @async for i=1:N
     put!(input, Entry(id=i, data=serialize(10+i), valid=false))
-    if i > N - 100
-        println("Entering unsafe mode")
-        for p in workers()
-            @fetchfrom p only(DistributedStreams.localpart(control)).safe[] = false
-        end
+    if i > N - 2*length(workers())
+        make_unsafe!(control)
     end
 end
 
@@ -100,19 +99,13 @@ while true
     global total_collected += length(out)
     update!(p, total_collected)
 
-    if total_collected>=N && (length(out) == 0)
+    if (total_collected >= N) && (length(out) == 0)
         break
     end
     sleep(1)
 end
 
-for p in workers()
-    @fetchfrom p only(DistributedStreams.localpart(control)).flag[] = true
-end
-println(control)
-for p in workers()
-    @spawnat p println(only(DistributedStreams.localpart(control)))
-end
+stop_workers!(control)
 
 println("Everthing has been shut down -- sleeping while workers quit")
 sleep(10)
