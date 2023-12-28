@@ -51,10 +51,9 @@ using Distributed
 addprocs(4)
 
 @everywhere using DistributedStreams
-@everywhere using Chain
 
 @everywhere function serialize(data)
-    @chain data begin
+    DistributedStreams.@chain data begin
         [_]
         DistributedStreams.Bits.to_bits(_)
         compress(_)
@@ -62,14 +61,14 @@ addprocs(4)
 end
 
 @everywhere function deserialize(data)
-    @chain data begin
+    DistributedStreams.@chain data begin
         decompress(_)
         DistributedStreams.Bits.from_bits(_)
         _[1]
     end
 end
 
-input, output = launch_monitor(
+input, output, control = launch_monitor(
     x->begin
         id = x.id
         data = deserialize(x.data) + 1
@@ -77,9 +76,46 @@ input, output = launch_monitor(
     end
 )
 
-N = 100
+N = 100000
 @async for i=1:N
-    put!(input, Entry(id=i, data=10+i, valid=false))
+    put!(input, Entry(id=i, data=serialize(10+i), valid=false))
+    if i > N - 100
+        println("Entering unsafe mode")
+        for p in workers()
+            @fetchfrom p only(DistributedStreams.localpart(control)).safe[] = false
+        end
+    end
 end
+
+using ProgressMeter
+
+p  = Progress(
+    N; desc="Collected: ", showspeed=true, enabled=true
+)
+update!(p, 0)
+
+global total_collected = 0
+while true
+    out = collect!(output)
+    global total_collected += length(out)
+    update!(p, total_collected)
+
+    if total_collected>=N && (length(out) == 0)
+        break
+    end
+    sleep(1)
+end
+
+for p in workers()
+    @fetchfrom p only(DistributedStreams.localpart(control)).flag[] = true
+end
+println(control)
+for p in workers()
+    @spawnat p println(only(DistributedStreams.localpart(control)))
+end
+
+println("Everthing has been shut down -- sleeping while workers quit")
+sleep(10)
+println("All done")
 
 #-------------------------------------------------------------------------------

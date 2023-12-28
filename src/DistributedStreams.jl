@@ -6,6 +6,7 @@ using .Bits
 using Base: @kwdef
 
 using Distributed
+using DistributedArrays
 using CodecZlib
 using Chain
 using JSON
@@ -74,19 +75,44 @@ The monitor worker only quits when it cannot take from `in`. The difference to
 `launch_consumer` is that `launch_monitor` creates its own input channel,
 whereas `launch_consumer` needs to be given an existing input channel.
 """
-function launch_monitor(processor; buffer_size=32)
-    function remote_monitor(fn, entries, results)
-        @sync while true
-            entry = try
-                take!(entries)
-            catch y
-                # TODO: This should be handled more gracefully: only kill the
-                # worker if there is the "right" error
-                println(y)
-                break
+function launch_monitor(processor; buffer_size=32, timeout=1)
+    distributed_control = DArray([
+        @spawnat p [(worker = p, safe = Ref(true), flag = Ref(false))]
+        for p in workers()
+    ])
+
+    function remote_monitor(fn, entries, results, control)
+        local_control = only(localpart(control))
+        while true
+            # take data from remote channel and process it asynchronously
+            t = @async fn(take!(entries))
+            # Don't enter the blocking code (below) until data could be taken
+            # (and processed). While waiting from the task to complete, also
+            # periodically check if the worker is flagged to be shut down -- if
+            # it is, then shut down the worker. Any running tasks are
+            # interrupted
+            while true
+                if local_control.safe[]
+                    break
+                end
+
+                if timedwait(()->istaskdone(t), timeout; pollint=0.001) == :ok
+                    break
+                end
+                # ALL CODE ENTERING HERE => TIMEDWAIT TIMED OUT
+                if local_control.flag[]  # Shutdown flag raised
+                    println("Worker $(local_control.worker) is shutting down")
+                    # Note that this is potentially unsafe. TODO: implement
+                    # better solution once:
+                    #  * https://github.com/JuliaLang/julia/issues/6283
+                    #  * https://github.com/JuliaLang/julia/issues/36217
+                    #  have satistfactory solution
+                    schedule(t, InterruptException(), error=true)
+                    return
+                end
             end
-            t = @async fn(entry)
-            @async put!(results, fetch(t))
+            # store data in out channel and sync loop
+            @sync put!(results, fetch(t))
         end
     end
 
@@ -96,10 +122,13 @@ function launch_monitor(processor; buffer_size=32)
         )
 
     for p in workers()
-        remote_do(remote_monitor, p, processor, entries, results)
+        remote_do(
+            remote_monitor, p,
+            processor, entries, results, distributed_control
+        )
     end
 
-    return entries, results
+    return entries, results, distributed_control
 end
 
 export launch_monitor
@@ -131,6 +160,7 @@ function launch_consumer(processor, entries; buffer_size=32)
     return results
 end
 
+export launch_consumer
 
 function collect!(
         results::A; collect_time=1,
@@ -148,10 +178,15 @@ function collect!(
     end
 
     sleep(collect_time)
+    # Note that this is potentially unsafe. TODO: implement better solution once
+    # https://github.com/JuliaLang/julia/issues/6283 and
+    # https://github.com/JuliaLang/julia/issues/36217 are fixed
     schedule(t, InterruptException(), error=true)
 
     return collected
 end
+
+export collect!
 
 
 #-------------------------------------------------------------------------------
