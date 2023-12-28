@@ -94,9 +94,11 @@ p  = Progress(
 update!(p, 0)
 
 global total_collected = 0
+global all_out = Any[]
 while true
     out = collect!(output)
     global total_collected += length(out)
+    global all_out = vcat(all_out, out)
     update!(p, total_collected)
 
     if (total_collected >= N) && (length(out) == 0)
@@ -107,8 +109,13 @@ end
 
 stop_workers!(control)
 
+for e in all_out
+    @test deserialize(e.data) == e.id + 10 + 1
+end
+
+
 println("Everthing has been shut down -- sleeping while workers quit")
-sleep(10)
+sleep(2)
 println("All done")
 
 #-------------------------------------------------------------------------------
