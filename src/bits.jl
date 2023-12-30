@@ -7,6 +7,8 @@ abstract type SerializedNamedTuple end
 struct NodeHeader
     size::UInt64
     type::UInt8
+    # TODO: add element number -- to handle nodes that contain sub-nodes (with
+    # variable-sized elements, eg. NamedTuple)
 
     function NodeHeader(type::DataType, data_length)
         type_idx = findfirst(x->x[1]==type, TYPES)
@@ -143,11 +145,15 @@ function custom_convert_from(
 
         cts = Ref(0)
         val = from_bits(bits; complete=false, idx=cts)
+        data_dict[key] = val
+
         idx += HEADER_SIZE + header.size + cts[]
         if idx >= length(data)
             break
         end
     end
+
+    return NamedTuple(data_dict)
 end
 
 function from_bits(bits::Vector{UInt8}; complete=true, idx=Ref(0))
