@@ -63,6 +63,7 @@ export compress, decompress
 """
     out, control = launch_consumer(
         processor, in;
+        workers=workers(),
         verbose=false, buffer_size=32, timeout=1, start_safe=false
     )
 
@@ -93,14 +94,18 @@ behavior:
   if) `take!(in)` takes more than `timeout` seconds.
 
 The `verbose` setting can be used to toggle printing uptdates to stdout.
+
+The `workers` kwarg can be used to specify on which workers `processor` should
+run.
 """
 function launch_consumer(
         processor, entries;
+        workers=workers(),
         verbose=false, buffer_size=32, timeout=1, start_safe=false
     )
     distributed_control = DArray([
         @spawnat p [(worker = p, safe = Ref(start_safe), flag = Ref(false))]
-        for p in workers()
+        for p in workers
     ])
 
     function remote_worker(fn, entries, results, control)
@@ -139,7 +144,7 @@ function launch_consumer(
             ()->Channel{fn_ret_type(processor, Entry)}(buffer_size)
         )
 
-    for p in workers()
+    for p in workers
         remote_do(
             remote_worker, p,
             processor, entries, results, distributed_control
@@ -154,6 +159,7 @@ export launch_consumer
 """
     in, out, control = launch_monitor(
         processor, in;
+        workers=workers(),
         verbose=false, buffer_size=32, timeout=1, start_safe=false
     )
 
@@ -184,9 +190,13 @@ behavior:
   if) `take!(in)` takes more than `timeout` seconds.
 
 The `verbose` setting can be used to toggle printing uptdates to stdout.
+
+The `workers` kwarg can be used to specify on which workers `processor` should
+run.
 """
 function launch_monitor(
         processor;
+        workers=workers(),
         verbose=false, buffer_size=32, timeout=1, start_safe=false
     )
 
@@ -194,6 +204,7 @@ function launch_monitor(
 
     results, distributed_control = launch_consumer(
         processor, entries;
+        workers=workers,
         verbose=false, buffer_size=32, timeout=1, start_safe=false
     )
 
@@ -229,14 +240,17 @@ end
 export collect!
 
 """
-    make_safe!(control)
+    make_safe!(control; workers=workers())
 
 Sets workers managed by `control` into "safe" mode: the worker assumes that
 there is enough data in the input channel for `take!(in)` not to become
 deadlocked. This can save time and resources by not polling `@async take!`.
+
+The `workers` kwarg can be used to specify on which workers `processor` should
+run.
 """
-function make_safe!(control)
-    for p in workers()
+function make_safe!(control; workers=workers())
+    for p in workers
         @fetchfrom p only(localpart(control)).safe[] = true
     end
 end
@@ -244,7 +258,7 @@ end
 export make_safe!
 
 """
-    make_unsafe!(control)
+    make_unsafe!(control; workers=workers())
 
 Sets workers managed by `control` into "unsafe" mode: the worker assumes that
 data could stop coming -- possibly causing `take!(in)` to become deadlocked. In
@@ -254,9 +268,12 @@ is set, then the worker will shut down.
 
 **Note:** Safe mode is not protected from deadlocked `take!` operations --
 therefore it is off by default. Only turn safe mode on if conserving resources.
+
+The `workers` kwarg can be used to specify on which workers `processor` should
+run.
 """
-function make_unsafe!(control)
-    for p in workers()
+function make_unsafe!(control; workers=workers())
+    for p in workers
         @fetchfrom p only(localpart(control)).safe[] = false
     end
 end
@@ -264,7 +281,7 @@ end
 export make_unsafe!
 
 """
-    stop_workers!(control)
+    stop_workers!(control; workers=workers())
 
 Sets the shutdown flag on the workers managed by `control`. If there is no more
 data in the input RemoteChannel (determined by checking that `take!(in)`
@@ -276,9 +293,12 @@ is therefore recommended that you call `make_unsafe!` in addition to calling
 they will not resolve a deadlocked worker. In order to resolve a deadlocked
 worker, ensure that `make_unsafe!` and `stop_workers!` is called, then send some
 junk data into the input channel.
+
+The `workers` kwarg can be used to specify on which workers `processor` should
+run.
 """
-function stop_workers!(control)
-    for p in workers()
+function stop_workers!(control; workers=workers())
+    for p in workers
         @fetchfrom p only(localpart(control)).flag[] = true
     end
 end
