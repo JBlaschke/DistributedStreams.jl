@@ -47,6 +47,22 @@ decompress(data) = transcode(ZlibDecompressor, data)
 
 export compress, decompress
 
+function serialize(data)
+    @chain data begin
+        Bits.to_bits(_)
+        compress(_)
+    end
+end
+
+function deserialize(data)
+    @chain data begin
+        decompress(_)
+        Bits.from_bits(_)
+    end
+end
+
+export serialize, deserialize
+
 #-------------------------------------------------------------------------------
 
 #_______________________________________________________________________________

@@ -11,22 +11,6 @@ addprocs(4)
 
 @everywhere using DistributedStreams
 
-@everywhere function serialize(data)
-    DistributedStreams.@chain data begin
-        [_]
-        DistributedStreams.Bits.to_bits(_)
-        compress(_)
-    end
-end
-
-@everywhere function deserialize(data)
-    DistributedStreams.@chain data begin
-        decompress(_)
-        DistributedStreams.Bits.from_bits(_)
-        _[1]
-    end
-end
-
 input, output, control = launch_monitor(
     x->begin
         id = x.id

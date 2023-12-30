@@ -51,4 +51,9 @@ idx = Ref(0)
 x = DistributedStreams.Bits.to_bits(val)
 @test DistributedStreams.Bits.from_bits(x; idx=idx) == val
 @test idx[] == length(x)
+
+val = randstring(1_000_000)
+x = serialize(val)
+@test deserialize(x) == val
+
 #-------------------------------------------------------------------------------
