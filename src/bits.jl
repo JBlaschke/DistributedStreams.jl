@@ -141,8 +141,9 @@ function custom_convert_from(
             idx + HEADER_SIZE:idx + HEADER_SIZE + header.size
         ])
 
-        val = from_bits(bits; complete=false)
-        idx += HEADER_SIZE + header.size
+        cts = Ref(0)
+        val = from_bits(bits; complete=false, idx=cts)
+        idx += HEADER_SIZE + header.size + cts[]
         if idx >= length(data)
             break
         end
