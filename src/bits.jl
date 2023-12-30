@@ -7,17 +7,17 @@ abstract type SerializedNamedTuple end
 struct NodeHeader
     size::UInt64
     type::UInt8
-    # TODO: add element number -- to handle nodes that contain sub-nodes (with
-    # variable-sized elements, eg. NamedTuple)
+    elts::Int64
+    scalar::Bool
 
-    function NodeHeader(type::DataType, data_length)
+    function NodeHeader(type::DataType, data_length::Int64, scalar::Bool)
         type_idx = findfirst(x->x[1]==type, TYPES)
 
         if isabstracttype(type)
-            return new(data_length, type_idx)
+            return new(0, type_idx, data_length, scalar)
         end
 
-        new(packed_sizeof(type)*data_length, type_idx)
+        new(packed_sizeof(type)*data_length, type_idx, data_length, scalar)
     end
 end
 
@@ -70,9 +70,9 @@ custom_convert_to(data::String) = Vector{UInt8}(data)
 # Default to byte-size when checking the size of String
 StructIO.packed_sizeof(::Type{String}) = packed_sizeof(UInt8)
 
-function to_bits(data::AbstractArray, type)
+function to_bits(data::AbstractArray, type, scalar)
     # Header
-    header = NodeHeader(type, length(data))
+    header = NodeHeader(type, length(data), scalar)
     header_size = packed_sizeof(NodeHeader)
 
     # Create bits buffer
@@ -86,17 +86,16 @@ function to_bits(data::AbstractArray, type)
     return buffer
 end
 
-to_bits(data::AbstractArray{T}) where T = to_bits(data, T)
+to_bits(data::AbstractArray{T}) where T = to_bits(data, T, false)
 
 # TODO: Handle arrays of these types
-to_bits(data::AbstractString) = to_bits(custom_convert_to(data), String)
+to_bits(data::AbstractString) = to_bits(custom_convert_to(data), String, true)
 
-# TODO: flag quantities as "scalar"
-to_bits(data::Number) = to_bits([data])
+to_bits(data::T) where T <: Number = to_bits([data], T, true)
 
 function to_bits(data::T) where T <: NamedTuple
     # Preamble tags that N key(string), value pairs are to follow
-    preamble = NodeHeader(SerializedNamedTuple, length(keys(data)))
+    preamble = NodeHeader(SerializedNamedTuple, length(keys(data)), true)
     preamble_size = packed_sizeof(NodeHeader)
 
     buffer = Vector{UInt8}(undef, preamble_size)
@@ -117,38 +116,34 @@ end
 
 export to_bits
 
-custom_convert_from(::Type{String}, data::AbstractArray{UInt8}) = String(data)
+function custom_convert_from(
+        ::Type{String}, data::AbstractArray{UInt8}, idx::Ref{Int64}
+    )
+    str = String(data)
+    idx[] += length(str)
+    return str
+end
 
 function custom_convert_from(
-        ::Type{SerializedNamedTuple}, data::AbstractArray{UInt8}
+        ::Type{SerializedNamedTuple}, data::AbstractArray{UInt8}, idx::Ref{Int64}
     )
 
-    # preamble_bits = @view bits[1:HEADER_SIZE]
-    # preamble_buf = IOBuffer(preamble_bits; read=true, write=false)
-    # preamble = unpack(header_buf, NodeHeader)
-
     data_dict = Dict{Symbol, Any}()
-    # idx += HEADER_SIZE
-    idx = 1
-
-    while true # preamble.size
-        header_bits = @view bits[idx:idx + HEADER_SIZE]
-        header_buf = IOBuffer(header_bits; read=true, write=false)
-        header = unpack(header_buf, NodeHeader)
-
-        type, _ = TYPES[header.type]
-        @assert type == String
-
-        key = custom_convert_from(String, @view bits[
-            idx + HEADER_SIZE:idx + HEADER_SIZE + header.size
-        ])
+    ptr = 1
+    while true
+        cts = Ref(0)
+        key = from_bits(@view data[ptr:end]; complete=false, idx=cts)
+        idx[] += cts[]
+        ptr   += cts[]
 
         cts = Ref(0)
-        val = from_bits(bits; complete=false, idx=cts)
-        data_dict[key] = val
+        val = from_bits(@view data[ptr:end]; complete=false, idx=cts)
+        idx[] += cts[]
+        ptr   += cts[]
 
-        idx += HEADER_SIZE + header.size + cts[]
-        if idx >= length(data)
+        data_dict[Symbol(key)] = val
+
+        if ptr >= length(data)
             break
         end
     end
@@ -156,7 +151,7 @@ function custom_convert_from(
     return NamedTuple(data_dict)
 end
 
-function from_bits(bits::Vector{UInt8}; complete=true, idx=Ref(0))
+function from_bits(bits::AbstractArray{UInt8}; complete=true, idx=Ref(0))
     header_bits = @view bits[1:1 + HEADER_SIZE]
     header_buf = IOBuffer(header_bits; read=true, write=false)
     header = unpack(header_buf, NodeHeader)
@@ -166,18 +161,24 @@ function from_bits(bits::Vector{UInt8}; complete=true, idx=Ref(0))
     # a `@view` => the `complete` flag is used to indicate that the `bits`
     # array is a complete record (as opposed to a larger record or which we're)
     # processing only a chunk
-    if complete || isabstracttype(type)
+    if complete || isabstracttype(type) || (header.size <= 0)
         data = @view bits[1 + HEADER_SIZE:end]
     else
         data = @view bits[1 + HEADER_SIZE:HEADER_SIZE + header.size]
     end
 
-    idx[] += HEADER_SIZE + header.size
+    idx[] += HEADER_SIZE
 
     if ! use_constructor
-        return reinterpret(type, data)
+        reconstructed = reinterpret(type, data)
+        idx[] += header.size
+        if header.scalar
+            return reconstructed[1]
+        else
+            return reconstructed
+        end
     else
-        return custom_convert_from(type, data)
+        return custom_convert_from(type, data, idx)
     end
 end
 
