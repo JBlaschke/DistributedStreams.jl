@@ -119,6 +119,26 @@ function launch_consumer(
         workers=workers(),
         verbose=false, buffer_size=32, timeout=1, start_safe=false
     )
+
+    results = RemoteChannel(
+            ()->Channel{fn_ret_type(processor, Entry)}(buffer_size)
+        )
+
+    distributed_control = launch_consumer(
+        processor, entries, results;
+        workers=workers, verbose=verbose, buffer_size=buffer_size,
+        timeout=timeout, start_safe=start_safe
+    )
+
+    return results, distributed_control
+end
+
+function launch_consumer(
+        processor, entries, results;
+        workers=workers(),
+        verbose=false, buffer_size=32, timeout=1, start_safe=false
+    )
+
     distributed_control = DArray([
         @spawnat p [(worker = p, safe = Ref(start_safe), flag = Ref(false))]
         for p in workers
@@ -156,10 +176,6 @@ function launch_consumer(
         end
     end
 
-    results = RemoteChannel(
-            ()->Channel{fn_ret_type(processor, Entry)}(buffer_size)
-        )
-
     for p in workers
         remote_do(
             remote_worker, p,
@@ -167,7 +183,7 @@ function launch_consumer(
         )
     end
 
-    return results, distributed_control
+    return distributed_control
 end
 
 export launch_consumer
