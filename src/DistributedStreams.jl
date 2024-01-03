@@ -248,12 +248,12 @@ export launch_monitor
 function collect!(
         results::A; collect_time=1,
     ) where {
-             T <: Entry,
+             T <: Any,
              S <: AbstractChannel{T},
              A <: Union{S, RemoteChannel{S}}
             }
 
-    collected = Vector{Entry}()
+    collected = Vector{T}()
 
     t = @async while true
         fd = take!(results)
