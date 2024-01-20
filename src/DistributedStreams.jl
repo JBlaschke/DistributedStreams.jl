@@ -63,6 +63,13 @@ end
 
 export serialize, deserialize
 
+
+function verbose_println(verbose, message)
+    if verbose
+        println(message)
+    end
+end
+
 #-------------------------------------------------------------------------------
 
 #_______________________________________________________________________________
@@ -165,9 +172,9 @@ function launch_consumer(
                 end
                 # ALL CODE ENTERING HERE => TIMEDWAIT TIMED OUT
                 if local_control.flag[]  # Shutdown flag raised
-                    if verbose
-                        println("Worker $(local_control.worker) is shutting down")
-                    end
+                    verbose_println(verbose,
+                        "Worker $(local_control.worker) is shutting down"
+                    )
                     return
                 end
             end
@@ -338,5 +345,164 @@ end
 export stop_workers!
 
 #-------------------------------------------------------------------------------
+
+@enum MessageType begin
+    start
+    stop
+    started
+    stopped
+    failed
+end
+
+@kwdef struct ControlMessage
+    message_type::MessageType
+    target::Int64
+    func_f::Union{Function, Nothing}
+    func_in::Union{RemoteChannel, Nothing}
+    func_out::Union{RemoteChannel, Nothing}
+end
+
+function launch_sentinel(;workers=[2], verbose=false, buffer_size=32, timeout=1)
+
+    distributed_control = DArray([
+        @spawnat p [(worker = p, flag = Ref(false))]
+        for p in workers
+    ])
+
+    function remote_worker(entries, results, control)
+        # list of active workers
+        active_workers = Dict{Int64}{DArray}()
+
+        # controller used to modify the behaviour of a running worker, e.g.
+        # shut it down gracefully
+        local_control = only(localpart(control))
+
+        # check for any failed workers -- if failures did occur, report them as
+        # a `failed` type message and remove them from the active_workers list
+        @async while true
+            # check if should stop checking
+            if local_control.flag[]  # Shutdown flag raised
+                verbose_println(verbose,
+                    "Sentinel on $(local_control.worker) is shutting down"
+                )
+                break
+            end
+            current_worker_list = Distributed.workers()
+            for w in keys(active_workers)
+                if !(w in current_worker_list)
+                    @async put!(results, ControlMessage(
+                        message_type=failed,
+                        target=w,
+                        func_f=nothing,
+                        func_in=nothing,
+                        func_out=nothing
+                    ))
+                    delete!(active_workers, w)
+                    verbose_println(verbose,
+                        "Worker $(w) died"
+                    )
+                end
+            end
+            # we don't need to check all the time
+            sleep(timeout)
+        end
+
+        # create mechanism to bypass take! if message is not ready => avoid
+        # blocking channel with a `fetch`
+        message_task = @async take!(entries)
+
+        while true
+            if ! istaskdone(message_task)
+                sleep(timeout)
+                continue
+            end
+
+            # Periodically check if the worker is flagged to be shut down.
+            # `timedwait` is slow, so we run this in async mode.
+            @async while true
+                # introduce timeout which will shut down the worker with
+                # `local_control.flag[] == true`
+                if timedwait(()->istaskdone(message_task), timeout) == :ok
+                    break
+                end
+                # ALL CODE ENTERING HERE => TIMEDWAIT TIMED OUT
+                if local_control.flag[]  # Shutdown flag raised
+                    verbose_println(verbose,
+                        "Sentinel on $(local_control.worker) is shutting down"
+                    )
+                    sleep(2*timeout) # give everything time to quit
+                    return
+                end
+            end
+
+            # process message
+            message = fetch(message_task)
+
+            if message.message_type == start
+                println("Start instruction for $(message.target)")
+                control = launch_consumer(
+                    message.func_f, message.func_in, message.func_out;
+                    workers=[message.target], verbose=true, buffer_size=32,
+                    timeout=1, start_safe=false
+                )
+                println("Started")
+                active_workers[message.target] = control
+                @async put!(results, ControlMessage(
+                    message_type=started,
+                    target=message.target,
+                    func_f=nothing,
+                    func_in=nothing,
+                    func_out=nothing
+                ))
+            elseif message.message_type == stop
+                println("Stop instruction for $(message.target)")
+                if message.target in keys(active_workers)
+                    make_unsafe!(
+                        active_workers[message.target];
+                        workers=[message.target]
+                    )
+                    stop_workers!(
+                        active_workers[message.target];
+                        workers=[message.target]
+                    )
+                    @async put!(results, ControlMessage(
+                        message_type=stopped,
+                        target=message.target,
+                        func_f=nothing,
+                        func_in=nothing,
+                        func_out=nothing
+                    ))
+                    delete!(active_workers, message.target)
+                    println("Stopped")
+                end
+            else
+                # all other message types ignored by putting them directly into the
+                # output channel
+                @async put!(results, message)
+            end
+            # All done with this one => take the next message, rinse, repeat
+            message_task = @async take!(entries)
+        end
+    end
+
+    # these remote channels are owned by PID=1
+    control_messages  = RemoteChannel(
+        ()->Channel{ControlMessage}(buffer_size), 1
+    )
+    control_responses = RemoteChannel(
+        ()->Channel{ControlMessage}(buffer_size), 1
+    )
+
+    for p in workers
+        remote_do(
+            remote_worker, p,
+            control_messages, control_responses, distributed_control
+        )
+    end
+
+    return control_messages, control_responses, distributed_control
+end
+
+export launch_sentinel, ControlMessage, MessageType
 
 end # module DistributedStreams
