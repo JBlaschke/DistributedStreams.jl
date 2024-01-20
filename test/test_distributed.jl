@@ -11,7 +11,7 @@ addprocs(4)
 
 @everywhere using DistributedStreams
 
-input, output, control = launch_monitor(
+input, output, control, status = launch_monitor(
     x->begin
         id = x.id
         data = deserialize(x.data) + 1

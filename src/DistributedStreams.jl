@@ -131,13 +131,13 @@ function launch_consumer(
             ()->Channel{fn_ret_type(processor, Entry)}(buffer_size)
         )
 
-    distributed_control = launch_consumer(
+    distributed_control, worker_status = launch_consumer(
         processor, entries, results;
         workers=workers, verbose=verbose, buffer_size=buffer_size,
         timeout=timeout, start_safe=start_safe
     )
 
-    return results, distributed_control
+    return results, distributed_control, worker_status
 end
 
 function launch_consumer(
@@ -183,14 +183,16 @@ function launch_consumer(
         end
     end
 
+    worker_status = []
     for p in workers
-        remote_do(
+        status = remotecall(
             remote_worker, p,
             processor, entries, results, distributed_control
         )
+        push!(worker_status, status)
     end
 
-    return distributed_control
+    return distributed_control, worker_status
 end
 
 export launch_consumer
@@ -241,13 +243,13 @@ function launch_monitor(
 
     entries = RemoteChannel(()->Channel{Entry}(buffer_size))
 
-    results, distributed_control = launch_consumer(
+    results, distributed_control, worker_status = launch_consumer(
         processor, entries;
         workers=workers,
         verbose=false, buffer_size=32, timeout=1, start_safe=false
     )
 
-    return entries, results, distributed_control
+    return entries, results, distributed_control, worker_status
 end
 
 export launch_monitor
@@ -361,6 +363,27 @@ end
     func_in::Union{RemoteChannel, Nothing}
     func_out::Union{RemoteChannel, Nothing}
 end
+
+function sendfunc(f::Function, dest::Int64, mod::Union{Module, Nothing}=nothing)
+    if isnothing(mod)
+        mod = parentmodule(f)
+    end
+    # get fully-qualified name of function
+    fname = Symbol(f)
+    mname = Symbol(mod)
+    # sender serializes function
+    buf = IOBuffer()
+    Serialization.serialize(buf, methods(eval(:($mname.$fname))))
+    # receiver deserializes function
+    Distributed.remotecall_eval(
+        mod, [dest], quote
+            function $fname end
+            Serialization.deserialize(seekstart($buf))
+        end
+    )
+end
+
+export sendfunc
 
 function launch_sentinel(;workers=[2], verbose=false, buffer_size=32, timeout=1)
 
@@ -493,14 +516,16 @@ function launch_sentinel(;workers=[2], verbose=false, buffer_size=32, timeout=1)
         ()->Channel{ControlMessage}(buffer_size), 1
     )
 
+    worker_status = []
     for p in workers
-        remote_do(
+        status = remotecall(
             remote_worker, p,
             control_messages, control_responses, distributed_control
         )
+        push!(worker_status, status)
     end
 
-    return control_messages, control_responses, distributed_control
+    return control_messages, control_responses, distributed_control, worker_status
 end
 
 export launch_sentinel, ControlMessage, MessageType
