@@ -53,7 +53,7 @@ x = DistributedStreams.Bits.to_bits(val)
 @test idx[] == length(x)
 
 val = randstring(1_000_000)
-x = serialize(val)
-@test deserialize(x) == val
+x = DistributedStreams.Bits.serialize(val)
+@test DistributedStreams.Bits.deserialize(x) == val
 
 #-------------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 module Bits
 
-using StructIO
+using StructIO, Chain, CodecZlib
 
 abstract type SerializedNamedTuple end
 
@@ -183,5 +183,33 @@ function from_bits(bits::AbstractArray{UInt8}; complete=true, idx=Ref(0))
 end
 
 export from_bits
+
+#_______________________________________________________________________________
+# Helper functions to compress and decompress data, using these functions
+# ensure that a consistent compression and decompression algorithm is used
+#-------------------------------------------------------------------------------
+
+compress(data)   = transcode(ZlibCompressor,   data)
+decompress(data) = transcode(ZlibDecompressor, data)
+
+export compress, decompress
+
+function serialize(data)
+    @chain data begin
+        to_bits(_)
+        compress(_)
+    end
+end
+
+function deserialize(data)
+    @chain data begin
+        decompress(_)
+        from_bits(_)
+    end
+end
+
+export serialize, deserialize
+
+#-------------------------------------------------------------------------------
 
 end

@@ -14,8 +14,12 @@ addprocs(4)
 input, output, control, status = launch_monitor(
     x->begin
         id = x.id
-        data = deserialize(x.data) + 1
-        Entry(id=x.id, data=serialize(data), valid=true)
+        data = DistributedStreams.Serialize.deserialize(x.data) + 1
+        Entry(
+            id=x.id,
+            data=DistributedStreams.Serialize.serialize(data),
+            valid=true
+        )
     end;
     start_safe = false,
     verbose = true
@@ -23,7 +27,11 @@ input, output, control, status = launch_monitor(
 
 N = 100000
 @async for i=1:N
-    put!(input, Entry(id=i, data=serialize(10+i), valid=false))
+    put!(input, Entry(
+            id=i,
+            data=DistributedStreams.Serialize.serialize(10+i),
+            valid=false
+    ))
     if i > N - 2*length(workers())
         make_unsafe!(control)
     end
@@ -53,7 +61,7 @@ end
 stop_workers!(control)
 
 for e in all_out
-    @test deserialize(e.data) == e.id + 10 + 1
+    @test DistributedStreams.Serialize.deserialize(e.data) == e.id + 10 + 1
 end
 
 rmprocs(workers())

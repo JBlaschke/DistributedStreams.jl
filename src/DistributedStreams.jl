@@ -2,15 +2,16 @@ module DistributedStreams
 
 include("bits.jl")
 using .Bits
+include("serialize.jl")
+using .Serialize
 
 using Base: @kwdef
 
 using Distributed
 using DistributedArrays
-using CodecZlib
-using Chain
-using JSON
-using Dates
+# using JSON
+# using Dates
+using Serialization
 
 
 #_______________________________________________________________________________
@@ -37,40 +38,11 @@ fn_ret_type(fn, in_type::DataType) = Base.return_types(fn, (in_type,))[1]
 
 #-------------------------------------------------------------------------------
 
-#_______________________________________________________________________________
-# Helper functions to compress and decompress data, using these functions
-# ensure that a consistent compression and decompression algorithm is used
-#-------------------------------------------------------------------------------
-
-compress(data)   = transcode(ZlibCompressor,   data)
-decompress(data) = transcode(ZlibDecompressor, data)
-
-export compress, decompress
-
-function serialize(data)
-    @chain data begin
-        Bits.to_bits(_)
-        compress(_)
-    end
-end
-
-function deserialize(data)
-    @chain data begin
-        decompress(_)
-        Bits.from_bits(_)
-    end
-end
-
-export serialize, deserialize
-
-
 function verbose_println(verbose, message)
     if verbose
         println(message)
     end
 end
-
-#-------------------------------------------------------------------------------
 
 #_______________________________________________________________________________
 # Worker functions following a producer-consumer pattern:
@@ -378,7 +350,7 @@ function sendfunc(f::Function, dest::Int64, mod::Union{Module, Nothing}=nothing)
     Distributed.remotecall_eval(
         mod, [dest], quote
             function $fname end
-            Serialization.deserialize(seekstart($buf))
+            DistributedStreams.Serialization.deserialize(seekstart($buf))
         end
     )
 end
