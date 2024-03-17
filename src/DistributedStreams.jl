@@ -9,8 +9,6 @@ using Base: @kwdef
 
 using Distributed
 using DistributedArrays
-# using JSON
-# using Dates
 using Serialization
 
 
@@ -31,7 +29,7 @@ export Entry
 #_______________________________________________________________________________
 # Helper function to infer return types of a function
 # TODO: maybe this should work with varags? Right now the design assumes a
-# single input and a single output type argument.
+# single input and a single outpuentriest type argument.
 #-------------------------------------------------------------------------------
 
 fn_ret_type(fn, in_type::DataType) = Base.return_types(fn, (in_type,))[1]
@@ -54,6 +52,11 @@ end
 # + `collect!` consumes all data of type `Entry` and adds it to a vector. It is
 #   a data sink (consumer)
 #-------------------------------------------------------------------------------
+
+@kwdef struct RemoteWorkerControl
+    control::Any
+    status::Any
+end
 
 """
     out, control = launch_consumer(
@@ -103,19 +106,18 @@ function launch_consumer(
             ()->Channel{fn_ret_type(processor, Entry)}(buffer_size)
         )
 
-    distributed_control, worker_status = launch_consumer(
+    remote_worker_control = launch_consumer(
         processor, entries, results;
-        workers=workers, verbose=verbose, buffer_size=buffer_size,
-        timeout=timeout, start_safe=start_safe
+        workers=workers, verbose=verbose, timeout=timeout, start_safe=start_safe
     )
 
-    return results, distributed_control, worker_status
+    return results, remote_worker_control
 end
 
 function launch_consumer(
         processor, entries, results;
         workers=workers(),
-        verbose=false, buffer_size=32, timeout=1, start_safe=false
+        verbose=false, timeout=1, start_safe=false
     )
 
     distributed_control = DArray([
@@ -164,7 +166,10 @@ function launch_consumer(
         push!(worker_status, status)
     end
 
-    return distributed_control, worker_status
+    return RemoteWorkerControl(
+        control=distributed_control,
+        status=worker_status
+    )
 end
 
 export launch_consumer
@@ -215,13 +220,13 @@ function launch_monitor(
 
     entries = RemoteChannel(()->Channel{Entry}(buffer_size))
 
-    results, distributed_control, worker_status = launch_consumer(
+    results, remote_worker_control = launch_consumer(
         processor, entries;
         workers=workers,
-        verbose=false, buffer_size=32, timeout=1, start_safe=false
+        verbose=verbose, buffer_size=32, timeout=timeout, start_safe=start_safe
     )
 
-    return entries, results, distributed_control, worker_status
+    return entries, results, remote_worker_control
 end
 
 export launch_monitor
@@ -262,11 +267,15 @@ deadlocked. This can save time and resources by not polling `@async take!`.
 The `workers` kwarg can be used to specify on which workers `processor` should
 run.
 """
-function make_safe!(control; workers=workers())
+function make_safe!(control::DArray{T}; workers=workers()) where T <: Any
     for p in workers
         @fetchfrom p only(localpart(control)).safe[] = true
     end
 end
+
+make_safe!(control::RemoteWorkerControl; workers=workers()) = make_safe!(
+    control.control; workers
+)
 
 export make_safe!
 
@@ -285,11 +294,15 @@ therefore it is off by default. Only turn safe mode on if conserving resources.
 The `workers` kwarg can be used to specify on which workers `processor` should
 run.
 """
-function make_unsafe!(control; workers=workers())
+function make_unsafe!(control::DArray{T}; workers=workers()) where T <: Any
     for p in workers
         @fetchfrom p only(localpart(control)).safe[] = false
     end
 end
+
+make_unsafe!(control::RemoteWorkerControl; workers=workers()) = make_unsafe!(
+    control.control; workers
+)
 
 export make_unsafe!
 
@@ -310,11 +323,15 @@ junk data into the input channel.
 The `workers` kwarg can be used to specify on which workers `processor` should
 run.
 """
-function stop_workers!(control; workers=workers())
+function stop_workers!(control::DArray{T}; workers=workers()) where T <:Any
     for p in workers
         @fetchfrom p only(localpart(control)).flag[] = true
     end
 end
+
+stop_workers!(control::RemoteWorkerControl; workers=workers()) = stop_workers!(
+    control.control; workers
+)
 
 export stop_workers!
 
@@ -497,7 +514,10 @@ function launch_sentinel(;workers=[2], verbose=false, buffer_size=32, timeout=1)
         push!(worker_status, status)
     end
 
-    return control_messages, control_responses, distributed_control, worker_status
+    return control_messages, control_responses, RemoteWorkerControl(
+        control=distributed_control,
+        status=worker_status
+    )
 end
 
 export launch_sentinel, ControlMessage, MessageType

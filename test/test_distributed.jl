@@ -11,7 +11,7 @@ addprocs(4)
 
 @everywhere using DistributedStreams
 
-input, output, control, status = launch_monitor(
+input, output, control = launch_monitor(
     x->begin
         id = x.id
         data = DistributedStreams.Serialize.deserialize(x.data) + 1
@@ -21,7 +21,7 @@ input, output, control, status = launch_monitor(
             valid=true
         )
     end;
-    start_safe = false,
+    start_safe = true,
     verbose = true
 )
 
@@ -54,13 +54,14 @@ while true
 
     if (total_collected >= N) && (length(out) == 0)
         break
+    elseif length(out) == 0
+        sleep(1)
     end
-    sleep(1)
 end
 
 stop_workers!(control)
 
-for e in all_out
+@showprogress dt=1 desc="Checking: " for e in all_out
     @test DistributedStreams.Serialize.deserialize(e.data) == e.id + 10 + 1
 end
 
