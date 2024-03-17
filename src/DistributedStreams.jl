@@ -343,14 +343,23 @@ export stop_workers!
     started
     stopped
     failed
+    completed
+end
+
+@kwdef struct FunctionPayload
+    f::Function
+    in::RemoteChannel
+    out::RemoteChannel
+end
+
+struct ReturnPayload
+    value::Any
 end
 
 @kwdef struct ControlMessage
     message_type::MessageType
     target::Int64
-    func_f::Union{Function, Nothing}
-    func_in::Union{RemoteChannel, Nothing}
-    func_out::Union{RemoteChannel, Nothing}
+    payload::Union{Nothing, FunctionPayload, ReturnPayload}
 end
 
 function sendfunc(f::Function, dest::Int64, mod::Union{Module, Nothing}=nothing)
@@ -386,53 +395,22 @@ function launch_sentinel(
     function remote_worker(entries, results, control)
         # list of active workers
         active_workers = Dict{Int64}{RemoteWorkerControl}()
+        active_watchers = Dict{Int64}{Task}()
 
         # controller used to modify the behaviour of a running worker, e.g.
         # shut it down gracefully
         local_control = only(localpart(control))
-
-        # check for any failed workers -- if failures did occur, report them as
-        # a `failed` type message and remove them from the active_workers list
-        @async while true
-            # check if should stop checking
-            if local_control.flag[]  # Shutdown flag raised
-                verbose_println(verbose,
-                    "Sentinel on $(local_control.worker) is shutting down"
-                )
-                break
-            end
-            current_worker_list = Distributed.workers()
-            for w in keys(active_workers)
-                if !(w in current_worker_list)
-                    @async put!(results, ControlMessage(
-                        message_type=failed,
-                        target=w,
-                        func_f=nothing,
-                        func_in=nothing,
-                        func_out=nothing
-                    ))
-                    delete!(active_workers, w)
-                    verbose_println(verbose,
-                        "Worker $(w) died"
-                    )
-                end
-            end
-            # we don't need to check all the time
-            sleep(timeout)
-        end
 
         # create mechanism to bypass take! if message is not ready => avoid
         # blocking channel with a `fetch`
         message_task = @async take!(entries)
 
         while true
-            if ! istaskdone(message_task)
-                sleep(timeout)
-                continue
-            end
-
+            #___________________________________________________________________
             # Periodically check if the worker is flagged to be shut down.
             # `timedwait` is slow, so we run this in async mode.
+            #-------------------------------------------------------------------
+
             @async while true
                 # introduce timeout which will shut down the worker with
                 # `local_control.flag[] == true`
@@ -449,13 +427,66 @@ function launch_sentinel(
                 end
             end
 
-            # process message
+            #___________________________________________________________________
+            # check for any failed workers -- if failures did occur, report them
+            # as a `failed` type message and remove them from the active_workers
+            # list
+            #-------------------------------------------------------------------
+
+            # check the status of Distributed worker processes => External
+            # interrupt could have killed those
+            current_worker_list = Distributed.workers()
+            for w in keys(active_workers)
+                # active worker doesn't have a watcher => start one
+                if !(w in keys(active_watchers))
+                    active_watchers[w] = @async fetch(
+                        only(active_workers[w].status)
+                    ) # assumption: workers only ever active on a single process
+                    println("Worker started for: $(w)")
+                end
+                # active worker process no longer running => report
+                if !(w in current_worker_list)
+                    @async put!(results, ControlMessage(
+                        message_type=failed,
+                        target=w,
+                        payload=nothing
+                    ))
+                    delete!(active_workers, w)
+                    verbose_println(verbose, "Worker $(w) died")
+                end
+            end
+
+            # check the status of the watchers => Internal error could have
+            # caused the workers to complete execution
+            for w in keys(active_watchers)
+                if istaskdone(active_watchers[w])
+                    @async put!(results, ControlMessage(
+                        message_type=completed,
+                        target=w,
+                        payload=ReturnPayload(active_watchers[w].result)
+                    ))
+                    verbose_println(verbose, "Worker $(w) completed")
+                    delete!(active_watchers, w)
+                    delete!(active_workers, w)  # delete worker also => avoid restart loop
+                end
+            end
+
+            #___________________________________________________________________
+            # process control messages
+            #-------------------------------------------------------------------
+
+            if ! istaskdone(message_task)
+                sleep(timeout)
+                continue
+            end
+
             message = fetch(message_task)
 
             if message.message_type == start
                 println("Start instruction for $(message.target)")
+                func::FunctionPayload = message.payload
                 control = launch_consumer(
-                    message.func_f, message.func_in, message.func_out;
+                    func.f, func.in, func.out;
                     workers=[message.target], verbose=verbose, timeout=timeout,
                     start_safe=start_safe
                 )
@@ -464,9 +495,7 @@ function launch_sentinel(
                 @async put!(results, ControlMessage(
                     message_type=started,
                     target=message.target,
-                    func_f=nothing,
-                    func_in=nothing,
-                    func_out=nothing
+                    payload=nothing
                 ))
             elseif message.message_type == stop
                 println("Stop instruction for $(message.target)")
@@ -482,18 +511,17 @@ function launch_sentinel(
                     @async put!(results, ControlMessage(
                         message_type=stopped,
                         target=message.target,
-                        func_f=nothing,
-                        func_in=nothing,
-                        func_out=nothing
+                        payload=nothing
                     ))
                     delete!(active_workers, message.target)
                     println("Stopped")
                 end
             else
-                # all other message types ignored by putting them directly into the
-                # output channel
+                # all other message types ignored by putting them directly into
+                # the output channel
                 @async put!(results, message)
             end
+
             # All done with this one => take the next message, rinse, repeat
             message_task = @async take!(entries)
         end
@@ -522,6 +550,6 @@ function launch_sentinel(
     )
 end
 
-export launch_sentinel, ControlMessage, MessageType
+export launch_sentinel, ControlMessage, FunctionPayload, ReturnPayload, MessageType
 
 end # module DistributedStreams
