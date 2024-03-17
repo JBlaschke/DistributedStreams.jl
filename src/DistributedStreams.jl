@@ -374,7 +374,9 @@ end
 
 export sendfunc
 
-function launch_sentinel(;workers=[2], verbose=false, buffer_size=32, timeout=1)
+function launch_sentinel(
+        ;workers=[2], verbose=false, buffer_size=32, timeout=1, start_safe=true
+    )
 
     distributed_control = DArray([
         @spawnat p [(worker = p, flag = Ref(false))]
@@ -383,7 +385,7 @@ function launch_sentinel(;workers=[2], verbose=false, buffer_size=32, timeout=1)
 
     function remote_worker(entries, results, control)
         # list of active workers
-        active_workers = Dict{Int64}{DArray}()
+        active_workers = Dict{Int64}{RemoteWorkerControl}()
 
         # controller used to modify the behaviour of a running worker, e.g.
         # shut it down gracefully
@@ -454,8 +456,8 @@ function launch_sentinel(;workers=[2], verbose=false, buffer_size=32, timeout=1)
                 println("Start instruction for $(message.target)")
                 control = launch_consumer(
                     message.func_f, message.func_in, message.func_out;
-                    workers=[message.target], verbose=true, buffer_size=32,
-                    timeout=1, start_safe=false
+                    workers=[message.target], verbose=verbose, timeout=timeout,
+                    start_safe=start_safe
                 )
                 println("Started")
                 active_workers[message.target] = control
