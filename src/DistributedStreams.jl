@@ -407,27 +407,6 @@ function launch_sentinel(
 
         while true
             #___________________________________________________________________
-            # Periodically check if the worker is flagged to be shut down.
-            # `timedwait` is slow, so we run this in async mode.
-            #-------------------------------------------------------------------
-
-            @async while true
-                # introduce timeout which will shut down the worker with
-                # `local_control.flag[] == true`
-                if timedwait(()->istaskdone(message_task), timeout) == :ok
-                    break
-                end
-                # ALL CODE ENTERING HERE => TIMEDWAIT TIMED OUT
-                if local_control.flag[]  # Shutdown flag raised
-                    verbose_println(verbose,
-                        "Sentinel on $(local_control.worker) is shutting down"
-                    )
-                    sleep(2*timeout) # give everything time to quit
-                    return
-                end
-            end
-
-            #___________________________________________________________________
             # check for any failed workers -- if failures did occur, report them
             # as a `failed` type message and remove them from the active_workers
             # list
@@ -472,33 +451,54 @@ function launch_sentinel(
             end
 
             #___________________________________________________________________
-            # process control messages
+            # Process control messages, and check if the worker is flagged to be
+            # shut down (shutdown occurs only if no more messages are to be
+            # processed).
             #-------------------------------------------------------------------
 
             if ! istaskdone(message_task)
                 sleep(timeout)
+
+                if (! istaskdone(message_task)) && local_control.flag[]
+                    # Shutdown flag raised and no more messages have arrived
+                    verbose_println(verbose,
+                        "Sentinel on $(local_control.worker) is shutting down"
+                    )
+                    break
+                end
+                # No more messages have arrived, but shutodwn order hasn't been
+                # given either => go to top of loop and check for failed workers
                 continue
             end
 
             message = fetch(message_task)
 
             if message.message_type == start
-                println("Start instruction for $(message.target)")
-                func::FunctionPayload = message.payload
-                control = launch_consumer(
-                    func.f, func.in, func.out;
-                    workers=[message.target], verbose=verbose, timeout=timeout,
-                    start_safe=start_safe
-                )
-                println("Started")
-                active_workers[message.target] = control
-                @async put!(results, ControlMessage(
-                    message_type=started,
-                    target=message.target,
-                    payload=nothing
-                ))
+                verbose_println(verbose, "Start instruction for $(message.target)")
+                if typeof(message.payload) != FunctionPayload
+                    @async put!(results, ControlMessage(
+                        message_type=completed,
+                        target=message.target,
+                        payload=ReturnPayload(ArgumentError(
+                            "Start request does not contain function"
+                        ))
+                    ))
+                else
+                    func::FunctionPayload = message.payload
+                    control = launch_consumer(
+                        func.f, func.in, func.out;
+                        workers=[message.target], verbose=verbose,
+                        timeout=timeout, start_safe=start_safe
+                    )
+                    active_workers[message.target] = control
+                    @async put!(results, ControlMessage(
+                        message_type=started,
+                        target=message.target,
+                        payload=nothing
+                    ))
+                end
             elseif message.message_type == stop
-                println("Stop instruction for $(message.target)")
+                verbose_println(verbose, "Stop instruction for $(message.target)")
                 if message.target in keys(active_workers)
                     make_unsafe!(
                         active_workers[message.target];
@@ -514,7 +514,6 @@ function launch_sentinel(
                         payload=nothing
                     ))
                     delete!(active_workers, message.target)
-                    println("Stopped")
                 end
             else
                 # all other message types ignored by putting them directly into
