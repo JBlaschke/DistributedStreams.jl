@@ -376,7 +376,7 @@ function sendfunc(f::Function, dest::Int64, mod::Union{Module, Nothing}=nothing)
     Distributed.remotecall_eval(
         mod, [dest], quote
             function $fname end
-            DistributedStreams.Serialization.deserialize(seekstart($buf))
+            Serialization.deserialize(seekstart($buf))
         end
     )
 end
